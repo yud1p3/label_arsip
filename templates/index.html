@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistem Cetak Label Arsip Mandiri</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-slate-50 min-h-screen flex items-center justify-center font-sans antialiased">
+
+    <div class="max-w-xl w-full mx-4 bg-white rounded-2xl shadow-xl p-8 border border-slate-100 transition-all duration-300">
+        <div class="text-center mb-8">
+            <div class="inline-flex p-3 bg-indigo-50 text-indigo-600 rounded-2xl mb-4 shadow-sm">
+                <i class="fa-solid fa-box-archive text-3xl"></i>
+            </div>
+            <h1 class="text-2xl font-bold text-slate-800 tracking-tight">Cetak Label Map Arsip</h1>
+            <p class="text-slate-500 text-sm mt-1">Dinas Perpustakaan dan Kearsipan Kabupaten Blitar</p>
+        </div>
+
+        <div id="dropzone-area" class="space-y-6">
+            <div class="border-2 border-dashed border-slate-200 hover:border-indigo-400 rounded-xl p-6 text-center cursor-pointer transition-colors group relative" id="upload-box">
+                <input type="file" id="excel_file" accept=".xlsx" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer">
+                <div class="space-y-2">
+                    <i class="fa-solid fa-file-excel text-4xl text-emerald-500 group-hover:scale-110 transition-transform"></i>
+                    <p class="text-sm font-semibold text-slate-700" id="file-name-text">Pilih atau Seret File Excel (.xlsx)</p>
+                    <p class="text-xs text-slate-400">Pastikan kolom sesuai format penanda: No, Klas, Judul, Tahun</p>
+                </div>
+            </div>
+
+            <button id="btn-proses" disabled class="w-full py-3 px-4 bg-slate-300 text-slate-500 font-medium rounded-xl cursor-not-allowed transition-all shadow-md focus:outline-none" onclick="mulaiProsesGenerasi()">
+                <i class="fa-solid fa-gear mr-2"></i> Mulai Proses & Unduh Label
+            </button>
+        </div>
+
+        <div id="progress-area" class="hidden space-y-6 mt-4">
+            <div class="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden">
+                <div id="progress-bar" class="bg-indigo-600 h-2.5 rounded-full w-0 transition-all duration-300 ease-out"></div>
+            </div>
+
+            <div class="space-y-3">
+                <div id="step-1" class="flex items-center text-sm text-slate-400 font-medium transition-colors">
+                    <div class="w-6 h-6 rounded-full border border-slate-200 flex items-center justify-center mr-3 text-xs bg-white text-slate-400" id="icon-1"><i class="fa-solid fa-clock"></i></div>
+                    <span>Mengunggah berkas Excel ke server...</span>
+                </div>
+                <div id="step-2" class="flex items-center text-sm text-slate-400 font-medium transition-colors">
+                    <div class="w-6 h-6 rounded-full border border-slate-200 flex items-center justify-center mr-3 text-xs bg-white text-slate-400" id="icon-2"><i class="fa-solid fa-clock"></i></div>
+                    <span>Membaca struktur data Sheet1 memori backend...</span>
+                </div>
+                <div id="step-3" class="flex items-center text-sm text-slate-400 font-medium transition-colors">
+                    <div class="w-6 h-6 rounded-full border border-slate-200 flex items-center justify-center mr-3 text-xs bg-white text-slate-400" id="icon-3"><i class="fa-solid fa-clock"></i></div>
+                    <span>Melakukan restrukturisasi OpenXML & In-Memory merging...</span>
+                </div>
+                <div id="step-4" class="flex items-center text-sm text-slate-400 font-medium transition-colors">
+                    <div class="w-6 h-6 rounded-full border border-slate-200 flex items-center justify-center mr-3 text-xs bg-white text-slate-400" id="icon-4"><i class="fa-solid fa-clock"></i></div>
+                    <span>Mengekspor file biner Buku_Label_Arsip_Total.docx...</span>
+                </div>
+            </div>
+        </div>
+
+        <div id="success-area" class="hidden text-center space-y-3 mt-4 p-4 bg-emerald-50 rounded-xl border border-emerald-100 text-emerald-800">
+            <i class="fa-solid fa-circle-check text-2xl text-emerald-500 animate-bounce"></i>
+            <p class="text-sm font-semibold">Dokumen Berhasil Dibuat & Diunduh!</p>
+            <button class="text-xs text-indigo-600 font-medium underline" onclick="resetForm()">Proses file baru lagi</button>
+        </div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('excel_file');
+        const fileNameText = document.getElementById('file-name-text');
+        const btnProses = document.getElementById('btn-proses');
+        const dropzoneArea = document.getElementById('dropzone-area');
+        const progressArea = document.getElementById('progress-area');
+        const successArea = document.getElementById('success-area');
+        const progressBar = document.getElementById('progress-bar');
+
+        // Deteksi perubahan file
+        fileInput.addEventListener('change', function() {
+            if(fileInput.files.length > 0) {
+                fileNameText.innerText = fileInput.files[0].name;
+                btnProses.disabled = false;
+                btnProses.className = "w-full py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-xl cursor-pointer transition-all shadow-md hover:shadow-indigo-200 active:scale-95 focus:outline-none";
+            }
+        });
+
+        // Ganti fungsi mulaiProsesGenerasi() lama dengan yang ini
+        async function mulaiProsesGenerasi() {
+            const file = fileInput.files[0];
+            if (!file) return;
+
+            // Alihkan tampilan ke Mode Progress Kerja
+            btnProses.disabled = true;
+            progressArea.classList.remove('hidden');
+
+            const formData = new FormData();
+            formData.append('excel_file', file);
+
+            try {
+                // --- TAHAP 1: Mulai Mengunggah Berkas ---
+                updateStepStatus(1, 'proses', '25%');
+
+                // Buat sedikit jeda visual (200ms) agar user bisa melihat pergerakan status animasi
+                await new Promise(resolve => setTimeout(resolve, 200));
+
+                // --- TAHAP 2: Membaca Struktur Data (Kirim Request ke Go Backend) ---
+                updateStepStatus(1, 'sukses', '50%');
+                updateStepStatus(2, 'proses', '50%');
+
+                const response = await fetch('/api/generate-label', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error('Gagal memproses berkas Excel di server.');
+                }
+
+                // --- TAHAP 3: Berhasil Merestrukturisasi & Merge di Memori ---
+                updateStepStatus(2, 'sukses', '75%');
+                updateStepStatus(3, 'proses', '75%');
+
+                // Jeda visual sejenak (300ms) agar animasi spinner tahap 3 terlihat logis oleh user
+                await new Promise(resolve => setTimeout(resolve, 300));
+                updateStepStatus(3, 'sukses', '90%');
+
+                // --- TAHAP 4: Pengeksporan Dokumen Biner Berhasil ---
+                updateStepStatus(4, 'proses', '95%');
+
+                // Konversi response biner dari Go menjadi objek Blob untuk diunduh
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+
+                // Beri nama file dinamis sesuai timestamp
+                a.download = `Buku_Label_Arsip_${Math.floor(Date.now() / 1000)}.docx`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                window.URL.revokeObjectURL(url);
+
+                // --- FINISH: Semua Tahap Sukses & Progress Bar Penuh 100% ---
+                await new Promise(resolve => setTimeout(resolve, 200));
+                updateStepStatus(4, 'sukses', '100%');
+
+                // Tampilkan box notifikasi sukses
+                setTimeout(() => {
+                    dropzoneArea.classList.add('hidden');
+                    successArea.classList.remove('hidden');
+                }, 400);
+
+            } catch (error) {
+                alert('Terjadi kesalahan: ' + error.message);
+                resetForm();
+            }
+        }
+
+        // Perbarui juga fungsi updateStepStatus() agar manipulasi width progress bar lebih presisi
+        function updateStepStatus(stepNum, status, widthPercent) {
+            const stepEl = document.getElementById(`step-${stepNum}`);
+            const iconEl = document.getElementById(`icon-${stepNum}`);
+
+            if (widthPercent) {
+                progressBar.style.width = widthPercent;
+            }
+
+            if (status === 'proses') {
+                stepEl.className = "flex items-center text-sm text-indigo-600 font-semibold transition-colors";
+                iconEl.className = "w-6 h-6 rounded-full bg-indigo-50 text-indigo-600 border border-indigo-200 flex items-center justify-center mr-3 text-xs animate-spin";
+                iconEl.innerHTML = `<i class="fa-solid fa-spinner"></i>`;
+            } else if (status === 'sukses') {
+                stepEl.className = "flex items-center text-sm text-emerald-600 font-medium transition-colors";
+                iconEl.className = "w-6 h-6 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200 flex items-center justify-center mr-3 text-xs";
+                iconEl.innerHTML = `<i class="fa-solid fa-check"></i>`;
+            }
+        }
+
+        function resetForm() {
+            fileInput.value = '';
+            fileNameText.innerText = "Pilih atau Seret File Excel (.xlsx)";
+            btnProses.disabled = true;
+            btnProses.className = "w-full py-3 px-4 bg-slate-300 text-slate-500 font-medium rounded-xl cursor-not-allowed transition-all shadow-md focus:outline-none";
+            dropzoneArea.classList.remove('hidden');
+            progressArea.classList.add('hidden');
+            successArea.classList.add('hidden');
+            progressBar.style.width = '0%';
+            for (let i = 1; i <= 4; i++) {
+                document.getElementById(`step-${i}`).className = "flex items-center text-sm text-slate-400 font-medium transition-colors";
+                const icon = document.getElementById(`icon-${i}`);
+                icon.className = "w-6 h-6 rounded-full border border-slate-200 flex items-center justify-center mr-3 text-xs bg-white text-slate-400";
+                icon.innerHTML = `<i class="fa-solid fa-clock"></i>`;
+            }
+        }
+    </script>
+</body>
+</html>
