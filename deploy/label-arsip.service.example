@@ -1,0 +1,22 @@
+[Unit]
+Description=Label Arsip Web App
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/home/ubuntu/label_arsip
+ExecStart=/home/ubuntu/label_arsip/label-arsip-prod
+Restart=always
+RestartSec=3
+EnvironmentFile=/home/ubuntu/label_arsip/.env
+
+# Opsi keamanan dasar
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+
+[Install]
+WantedBy=multi-user.target

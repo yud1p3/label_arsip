@@ -227,6 +227,10 @@ go build -o label-arsip-prod .
 
 ### 5. Jalankan dengan systemd
 
+Anda bisa memakai file contoh yang sudah disediakan di repo:
+
+- `deploy/label-arsip.service.example`
+
 Buat file service:
 
 ```sh
@@ -264,6 +268,10 @@ sudo systemctl status label-arsip
 ```
 
 ### 6. Reverse proxy dengan Nginx
+
+Anda bisa memakai file contoh yang sudah disediakan di repo:
+
+- `deploy/nginx-label-arsip.example.conf`
 
 Buat konfigurasi site:
 
