@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"time"
@@ -25,14 +26,21 @@ type LabelData struct {
 
 const labelPerHalaman = 20
 
-// Batasi maksimal 4 proses konversi biner berat secara bersamaan (proteksi CPU 2 Core)
-var semaphore = make(chan struct{}, 4)
+var (
+	reBaris        = regexp.MustCompile(`<w:tr\b[^>]*?>.*?</w:tr>`)
+	reTabelPenutup = regexp.MustCompile(`</w:tbl>`)
+	reSplitRunXML  = regexp.MustCompile(`%[^%]*?<[^>]*?>[^%]*?%`)
+	reXMLTag       = regexp.MustCompile(`<[^>]*?>`)
+)
 
 // app menampung dependensi runtime (konfigurasi & penyimpanan DOCX sementara)
 // yang dibutuhkan handler. Menghindari variabel global yang tersebar.
 type app struct {
-	cfg   Config
-	store *docxStore
+	cfg          Config
+	store        *docxStore
+	templateDOCX []byte
+	templateXML  []byte
+	jobs         chan struct{}
 }
 
 func main() {
@@ -41,7 +49,24 @@ func main() {
 		log.Fatalf("Gagal memuat konfigurasi: %v", err)
 	}
 
-	a := &app{cfg: cfg, store: newDocxStore()}
+	templatePath := "templates/template_label_map_arsip.docx"
+	templateDOCX, err := os.ReadFile(templatePath)
+	if err != nil {
+		log.Fatalf("Gagal membaca template DOCX: %v", err)
+	}
+
+	templateXML, err := extractTemplateDocumentXML(templateDOCX)
+	if err != nil {
+		log.Fatalf("Gagal mengekstrak XML template DOCX: %v", err)
+	}
+
+	a := &app{
+		cfg:          cfg,
+		store:        newDocxStore(),
+		templateDOCX: templateDOCX,
+		templateXML:  templateXML,
+		jobs:         make(chan struct{}, cfg.MaxConcurrentJobs),
+	}
 	go a.store.runGC()
 
 	gin.SetMode(gin.ReleaseMode)
@@ -58,6 +83,7 @@ func main() {
 		c.HTML(http.StatusOK, "index.html", nil)
 	})
 
+	fmt.Println("Batas pekerjaan berat paralel:", cfg.MaxConcurrentJobs)
 	if cfg.PDFEnabled() {
 		fmt.Println("Fitur PDF AKTIF (OnlyOffice:", cfg.OnlyOfficeURL+")")
 	} else {
@@ -128,7 +154,11 @@ func (a *app) generateLabelWebHandler(c *gin.Context) {
 		return
 	}
 
-	var daftarArsip []LabelData
+	kapasitasDaftar := 0
+	if len(rows) > 1 {
+		kapasitasDaftar = len(rows) - 1
+	}
+	daftarArsip := make([]LabelData, 0, kapasitasDaftar)
 	for i, row := range rows {
 		// Lewati header Excel (baris pertama) atau baris kosong yang tidak lengkap
 		if i == 0 || len(row) < 4 {
@@ -148,14 +178,11 @@ func (a *app) generateLabelWebHandler(c *gin.Context) {
 	}
 
 	// 3. Amankan CPU Resource dengan Antrean Semaphore
-	semaphore <- struct{}{}
-	defer func() { <-semaphore }()
-
-	// Jalur template relatif terhadap root folder project web
-	pathTemplate := "templates/template_label_map_arsip.docx"
+	a.jobs <- struct{}{}
+	defer func() { <-a.jobs }()
 
 	// 4. Olah Dokumen secara In-Memory
-	fileFinalBytes, err := prosesMultiHalamanInMemory(pathTemplate, daftarArsip)
+	fileFinalBytes, err := prosesMultiHalamanInMemory(a.templateDOCX, a.templateXML, daftarArsip)
 	if err != nil {
 		log.Printf("[Error] Gagal memproses dokumen: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Terjadi kegagalan internal saat menyusun dokumen Word"})
@@ -169,7 +196,7 @@ func (a *app) generateLabelWebHandler(c *gin.Context) {
 	}
 
 	// Default: transfer langsung byte array .docx ke browser (Direct Download Stream)
-	namaFileDownload := fmt.Sprintf("Buku_Label_Arsip_%d.docx", time.Now().Unix())
+	namaFileDownload := namaFileUnduhan("docx")
 	c.Header("Content-Description", "File Transfer")
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", namaFileDownload))
 	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
@@ -200,7 +227,7 @@ func (a *app) kirimSebagaiPDF(c *gin.Context, docxBytes []byte) {
 		return
 	}
 
-	namaFileDownload := fmt.Sprintf("Buku_Label_Arsip_%d.pdf", time.Now().Unix())
+	namaFileDownload := namaFileUnduhan("pdf")
 	c.Header("Content-Description", "File Transfer")
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", namaFileDownload))
 	c.Header("Content-Type", "application/pdf")
@@ -209,10 +236,9 @@ func (a *app) kirimSebagaiPDF(c *gin.Context, docxBytes []byte) {
 	_, _ = c.Writer.Write(pdfBytes)
 }
 
-func prosesMultiHalamanInMemory(templatePath string, daftarArsip []LabelData) ([]byte, error) {
+func prosesMultiHalamanInMemory(templateDOCX, templateXML []byte, daftarArsip []LabelData) ([]byte, error) {
 	totalData := len(daftarArsip)
 	var semuaBarisBaru []byte
-	reBaris := regexp.MustCompile(`<w:tr\b[^>]*?>.*?</w:tr>`)
 
 	var xmlUtama []byte
 	halamanKe := 0
@@ -226,10 +252,7 @@ func prosesMultiHalamanInMemory(templatePath string, daftarArsip []LabelData) ([
 		chunkData := daftarArsip[i:end]
 
 		// Ekstrak XML halaman dari memori
-		xmlKonten, err := buatHalamanXmlInMemory(templatePath, chunkData, i)
-		if err != nil {
-			return nil, err
-		}
+		xmlKonten := buatHalamanXmlInMemory(templateXML, chunkData, i)
 
 		if halamanKe == 1 {
 			xmlUtama = xmlKonten
@@ -241,8 +264,6 @@ func prosesMultiHalamanInMemory(templatePath string, daftarArsip []LabelData) ([
 		}
 	}
 
-	// Cari tag penutup tabel </w:tbl>
-	reTabelPenutup := regexp.MustCompile(`</w:tbl>`)
 	locs := reTabelPenutup.FindAllIndex(xmlUtama, -1)
 	if len(locs) == 0 {
 		return nil, fmt.Errorf("tag </w:tbl> tidak ditemukan di template")
@@ -255,11 +276,10 @@ func prosesMultiHalamanInMemory(templatePath string, daftarArsip []LabelData) ([
 	xmlFinal = append(xmlFinal, xmlUtama[posisiSisip:]...)
 
 	// Rekonstruksi struktur ZIP .docx utuh langsung ke memory buffer
-	templateReader, err := zip.OpenReader(templatePath)
+	templateReader, err := zip.NewReader(bytes.NewReader(templateDOCX), int64(len(templateDOCX)))
 	if err != nil {
 		return nil, err
 	}
-	defer templateReader.Close()
 
 	outputBuf := new(bytes.Buffer)
 	zipWriter := zip.NewWriter(outputBuf)
@@ -289,34 +309,46 @@ func prosesMultiHalamanInMemory(templatePath string, daftarArsip []LabelData) ([
 	return outputBuf.Bytes(), nil
 }
 
-func buatHalamanXmlInMemory(templatePath string, chunkData []LabelData, startIndex int) ([]byte, error) {
-	reader, err := zip.OpenReader(templatePath)
+func extractTemplateDocumentXML(templateDOCX []byte) ([]byte, error) {
+	reader, err := zip.NewReader(bytes.NewReader(templateDOCX), int64(len(templateDOCX)))
 	if err != nil {
 		return nil, err
 	}
-	defer reader.Close()
 
-	var xmlBytes []byte
 	for _, file := range reader.File {
-		if file.Name == "word/document.xml" {
-			fileReader, err := file.Open()
-			if err != nil {
-				return nil, err
-			}
-			buf := new(bytes.Buffer)
-			_, _ = io.Copy(buf, fileReader)
-			fileReader.Close()
-			xmlBytes = buf.Bytes()
-			break
+		if file.Name != "word/document.xml" {
+			continue
 		}
+
+		fileReader, err := file.Open()
+		if err != nil {
+			return nil, err
+		}
+
+		buf := new(bytes.Buffer)
+		_, err = io.Copy(buf, fileReader)
+		fileReader.Close()
+		if err != nil {
+			return nil, err
+		}
+
+		xmlBytes := buf.Bytes()
+		xmlBytes = reSplitRunXML.ReplaceAllFunc(xmlBytes, func(s []byte) []byte {
+			return reXMLTag.ReplaceAll(s, []byte(""))
+		})
+		return xmlBytes, nil
 	}
 
-	// Bersihkan split-run XML Word
-	re := regexp.MustCompile(`%[^%]*?<[^>]*?>[^%]*?%`)
-	xmlBytes = re.ReplaceAllFunc(xmlBytes, func(s []byte) []byte {
-		cleanRegex := regexp.MustCompile(`<[^>]*?>`)
-		return cleanRegex.ReplaceAll(s, []byte(""))
-	})
+	return nil, fmt.Errorf("file word/document.xml tidak ditemukan di template DOCX")
+}
+
+func namaFileUnduhan(ext string) string {
+	sekarang := time.Now()
+	return fmt.Sprintf("Buku_Label_Arsip_%d_%09d.%s", sekarang.Unix(), sekarang.Nanosecond(), ext)
+}
+
+func buatHalamanXmlInMemory(templateXML []byte, chunkData []LabelData, startIndex int) []byte {
+	xmlBytes := append([]byte(nil), templateXML...)
 
 	// Inject data riil
 	for index, data := range chunkData {
@@ -340,5 +372,5 @@ func buatHalamanXmlInMemory(templatePath string, chunkData []LabelData, startInd
 		}
 	}
 
-	return xmlBytes, nil
+	return xmlBytes
 }

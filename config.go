@@ -4,16 +4,18 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
 // Config menampung seluruh setelan runtime aplikasi.
 // Nilai dibaca dari environment OS, dengan fallback isian file .env.
 type Config struct {
-	OnlyOfficeURL  string // URL Document Server, mis. http://localhost:8026
-	JWTSecret      string // secret JWT OnlyOffice (services.CoAuthoring.secret)
-	JWTHeader      string // nama header pembawa token, mis. Authorization
-	AppInternalURL string // URL aplikasi ini yang dapat dijangkau OnlyOffice, mis. http://localhost:8080
+	OnlyOfficeURL     string // URL Document Server, mis. http://localhost:8026
+	JWTSecret         string // secret JWT OnlyOffice (services.CoAuthoring.secret)
+	JWTHeader         string // nama header pembawa token, mis. Authorization
+	AppInternalURL    string // URL aplikasi ini yang dapat dijangkau OnlyOffice, mis. http://localhost:8080
+	MaxConcurrentJobs int    // jumlah maksimal pekerjaan berat paralel di aplikasi Go
 }
 
 // PDFEnabled menandakan fitur konversi PDF dapat dipakai.
@@ -75,10 +77,15 @@ func loadConfig() (Config, error) {
 	}
 
 	cfg := Config{
-		OnlyOfficeURL:  envOr("ONLYOFFICE_URL", "http://localhost:8026"),
-		JWTSecret:      os.Getenv("ONLYOFFICE_JWT_SECRET"),
-		JWTHeader:      envOr("ONLYOFFICE_JWT_HEADER", "Authorization"),
-		AppInternalURL: envOr("APP_INTERNAL_URL", "http://localhost:8080"),
+		OnlyOfficeURL:     envOr("ONLYOFFICE_URL", "http://localhost:8026"),
+		JWTSecret:         os.Getenv("ONLYOFFICE_JWT_SECRET"),
+		JWTHeader:         envOr("ONLYOFFICE_JWT_HEADER", "Authorization"),
+		AppInternalURL:    envOr("APP_INTERNAL_URL", "http://localhost:8080"),
+		MaxConcurrentJobs: envIntOr("MAX_CONCURRENT_JOBS", 2),
+	}
+
+	if cfg.MaxConcurrentJobs < 1 {
+		cfg.MaxConcurrentJobs = 1
 	}
 
 	// Rapikan trailing slash agar penyusunan URL konsisten.
@@ -91,6 +98,16 @@ func loadConfig() (Config, error) {
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+func envIntOr(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err == nil {
+			return n
+		}
 	}
 	return def
 }

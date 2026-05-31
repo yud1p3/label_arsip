@@ -11,3 +11,6 @@ temp/
 
 # Mengabaikan file environment (berisi secret JWT OnlyOffice)
 .env
+
+# Binary hasil build Linux
+label_arsip

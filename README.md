@@ -100,6 +100,7 @@ Jika key yang sama tersedia di environment OS, nilainya akan **mengalahkan** isi
 | `ONLYOFFICE_JWT_SECRET` | Ya untuk PDF | - | Secret JWT OnlyOffice |
 | `ONLYOFFICE_JWT_HEADER` | Tidak | `Authorization` | Header pembawa token JWT |
 | `APP_INTERNAL_URL` | Ya untuk PDF | `http://localhost:8080` | URL aplikasi ini yang bisa diakses OnlyOffice |
+| `MAX_CONCURRENT_JOBS` | Tidak | `2` | Batas pekerjaan berat paralel; cocok untuk VPS 2 core / 4 GB |
 
 ### Contoh file `.env`
 
@@ -108,6 +109,7 @@ ONLYOFFICE_URL=http://localhost:8026
 ONLYOFFICE_JWT_SECRET=isi-secret-onlyoffice-anda
 ONLYOFFICE_JWT_HEADER=Authorization
 APP_INTERNAL_URL=http://localhost:8080
+MAX_CONCURRENT_JOBS=2
 ```
 
 > `.env` sudah diabaikan oleh git agar secret tidak ikut ter-commit.
@@ -125,6 +127,22 @@ docker run -i -t -d -p 8026:80 \
 ```
 
 Lalu samakan nilai `JWT_SECRET` di Docker dengan `ONLYOFFICE_JWT_SECRET` pada aplikasi.
+
+## Rekomendasi untuk VPS 2 Core / 4 GB RAM
+
+Untuk spesifikasi VPS ini, rekomendasi awal yang aman:
+
+```env
+MAX_CONCURRENT_JOBS=2
+```
+
+Alasannya:
+
+- proses generate DOCX dan konversi PDF termasuk pekerjaan berat CPU/memori
+- pembatasan 2 job paralel membantu mencegah lonjakan RAM dan CPU
+- request lain tetap bisa antre dengan lebih stabil dibanding memaksa banyak proses paralel
+
+Jika nanti hasil monitoring menunjukkan server masih longgar, nilai ini bisa dinaikkan bertahap ke `3`.
 
 ## Catatan penting integrasi PDF
 
