@@ -28,6 +28,20 @@
                 </div>
             </div>
 
+            <div>
+                <p class="text-xs font-medium text-slate-500 mb-2">Format keluaran</p>
+                <div class="grid grid-cols-2 gap-3">
+                    <label class="flex items-center gap-3 border border-slate-200 rounded-xl px-4 py-3 cursor-pointer transition-colors has-[:checked]:border-indigo-500 has-[:checked]:bg-indigo-50">
+                        <input type="radio" name="format" value="docx" class="accent-indigo-600" checked>
+                        <span class="text-sm font-medium text-slate-700"><i class="fa-solid fa-file-word text-blue-600 mr-1"></i> Word (.docx)</span>
+                    </label>
+                    <label class="flex items-center gap-3 border border-slate-200 rounded-xl px-4 py-3 cursor-pointer transition-colors has-[:checked]:border-indigo-500 has-[:checked]:bg-indigo-50">
+                        <input type="radio" name="format" value="pdf" class="accent-indigo-600">
+                        <span class="text-sm font-medium text-slate-700"><i class="fa-solid fa-file-pdf text-red-600 mr-1"></i> PDF (.pdf)</span>
+                    </label>
+                </div>
+            </div>
+
             <button id="btn-proses" disabled class="w-full py-3 px-4 bg-slate-300 text-slate-500 font-medium rounded-xl cursor-not-allowed transition-all shadow-md focus:outline-none" onclick="mulaiProsesGenerasi()">
                 <i class="fa-solid fa-gear mr-2"></i> Mulai Proses & Unduh Label
             </button>
@@ -88,12 +102,24 @@
             const file = fileInput.files[0];
             if (!file) return;
 
+            const format = document.querySelector('input[name="format"]:checked').value;
+            const isPdf = format === 'pdf';
+
+            // Sesuaikan label tahap akhir sesuai format (PDF butuh konversi tambahan).
+            const stepEkspor = document.querySelector('#step-4 span');
+            if (stepEkspor) {
+                stepEkspor.innerText = isPdf
+                    ? 'Mengonversi dokumen ke PDF via OnlyOffice...'
+                    : 'Mengekspor file biner Buku_Label_Arsip.docx...';
+            }
+
             // Alihkan tampilan ke Mode Progress Kerja
             btnProses.disabled = true;
             progressArea.classList.remove('hidden');
 
             const formData = new FormData();
             formData.append('excel_file', file);
+            formData.append('format', format);
 
             try {
                 // --- TAHAP 1: Mulai Mengunggah Berkas ---
@@ -112,7 +138,13 @@
                 });
 
                 if (!response.ok) {
-                    throw new Error('Gagal memproses berkas Excel di server.');
+                    // Coba ambil pesan error JSON dari backend bila ada.
+                    let pesan = 'Gagal memproses berkas Excel di server.';
+                    try {
+                        const data = await response.json();
+                        if (data && data.error) pesan = data.error;
+                    } catch (e) { /* respons bukan JSON, abaikan */ }
+                    throw new Error(pesan);
                 }
 
                 // --- TAHAP 3: Berhasil Merestrukturisasi & Merge di Memori ---
@@ -123,17 +155,20 @@
                 await new Promise(resolve => setTimeout(resolve, 300));
                 updateStepStatus(3, 'sukses', '90%');
 
-                // --- TAHAP 4: Pengeksporan Dokumen Biner Berhasil ---
+                // --- TAHAP 4: Pengeksporan / Konversi Dokumen ---
                 updateStepStatus(4, 'proses', '95%');
 
-                // Konversi response biner dari Go menjadi objek Blob untuk diunduh
+                // Tunggu seluruh body diterima (untuk PDF, ini termasuk waktu konversi).
                 const blob = await response.blob();
+
+                // Tentukan nama file: utamakan dari header Content-Disposition,
+                // fallback ke timestamp + ekstensi sesuai format terpilih.
+                const namaFile = ambilNamaFile(response, format);
+
                 const url = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-
-                // Beri nama file dinamis sesuai timestamp
-                a.download = `Buku_Label_Arsip_${Math.floor(Date.now() / 1000)}.docx`;
+                a.download = namaFile;
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
@@ -153,6 +188,17 @@
                 alert('Terjadi kesalahan: ' + error.message);
                 resetForm();
             }
+        }
+
+        // Ambil nama file dari header Content-Disposition; fallback ke timestamp + ekstensi.
+        function ambilNamaFile(response, format) {
+            const cd = response.headers.get('Content-Disposition') || '';
+            const cocok = cd.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)["']?/i);
+            if (cocok && cocok[1]) {
+                return decodeURIComponent(cocok[1].trim());
+            }
+            const ext = format === 'pdf' ? 'pdf' : 'docx';
+            return `Buku_Label_Arsip_${Math.floor(Date.now() / 1000)}.${ext}`;
         }
 
         // Perbarui juga fungsi updateStepStatus() agar manipulasi width progress bar lebih presisi

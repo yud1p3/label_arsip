@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -27,7 +28,22 @@ const labelPerHalaman = 20
 // Batasi maksimal 4 proses konversi biner berat secara bersamaan (proteksi CPU 2 Core)
 var semaphore = make(chan struct{}, 4)
 
+// app menampung dependensi runtime (konfigurasi & penyimpanan DOCX sementara)
+// yang dibutuhkan handler. Menghindari variabel global yang tersebar.
+type app struct {
+	cfg   Config
+	store *docxStore
+}
+
 func main() {
+	cfg, err := loadConfig()
+	if err != nil {
+		log.Fatalf("Gagal memuat konfigurasi: %v", err)
+	}
+
+	a := &app{cfg: cfg, store: newDocxStore()}
+	go a.store.runGC()
+
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 
@@ -35,16 +51,55 @@ func main() {
 	r.LoadHTMLGlob("templates/*")
 
 	r.MaxMultipartMemory = 5 << 20
-	r.POST("/api/generate-label", generateLabelWebHandler)
+	r.POST("/api/generate-label", a.generateLabelWebHandler)
+	// Endpoint internal: hanya untuk diakses OnlyOffice (loopback) mengambil DOCX sementara.
+	r.GET("/internal/docx/:token", a.serveInternalDocx)
 	r.GET("/", func(c *gin.Context) {
 		c.HTML(http.StatusOK, "index.html", nil)
 	})
 
+	if cfg.PDFEnabled() {
+		fmt.Println("Fitur PDF AKTIF (OnlyOffice:", cfg.OnlyOfficeURL+")")
+	} else {
+		fmt.Println("Fitur PDF NONAKTIF (secret/URL OnlyOffice belum lengkap) — hanya DOCX yang tersedia")
+	}
 	fmt.Println("Aplikasi Cetak Label berjalan di http://localhost:8080")
 	r.Run(":8080")
 }
 
-func generateLabelWebHandler(c *gin.Context) {
+// serveInternalDocx menyajikan byte DOCX sementara berdasarkan token sekali pakai.
+// Akses dibatasi hanya dari loopback (OnlyOffice native berjalan di host yang sama),
+// sehingga host lain di LAN tidak dapat mengambil dokumen meski menebak token.
+func (a *app) serveInternalDocx(c *gin.Context) {
+	ip := net.ParseIP(c.ClientIP())
+	if ip == nil || !ip.IsLoopback() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Akses ditolak"})
+		return
+	}
+
+	token := c.Param("token")
+	data, ok := a.store.getOnce(token)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Dokumen tidak ditemukan atau sudah kedaluwarsa"})
+		return
+	}
+
+	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+	c.Header("Content-Length", strconv.Itoa(len(data)))
+	_, _ = c.Writer.Write(data)
+}
+
+func (a *app) generateLabelWebHandler(c *gin.Context) {
+	// Format keluaran: "docx" (default) atau "pdf".
+	format := c.PostForm("format")
+	if format == "" {
+		format = "docx"
+	}
+	if format == "pdf" && !a.cfg.PDFEnabled() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Fitur konversi PDF sedang tidak tersedia di server"})
+		return
+	}
+
 	// 1. Tangkap file Excel dari Form Upload Multipart
 	fileHeader, err := c.FormFile("excel_file")
 	if err != nil {
@@ -107,7 +162,13 @@ func generateLabelWebHandler(c *gin.Context) {
 		return
 	}
 
-	// 5. Transfer langsung byte array .docx ke browser (Direct Download Stream)
+	// 5. Kirim hasil sesuai format yang diminta.
+	if format == "pdf" {
+		a.kirimSebagaiPDF(c, fileFinalBytes)
+		return
+	}
+
+	// Default: transfer langsung byte array .docx ke browser (Direct Download Stream)
 	namaFileDownload := fmt.Sprintf("Buku_Label_Arsip_%d.docx", time.Now().Unix())
 	c.Header("Content-Description", "File Transfer")
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", namaFileDownload))
@@ -115,6 +176,37 @@ func generateLabelWebHandler(c *gin.Context) {
 	c.Header("Content-Length", strconv.Itoa(len(fileFinalBytes)))
 
 	_, _ = c.Writer.Write(fileFinalBytes)
+}
+
+// kirimSebagaiPDF menyimpan DOCX ke store sementara, memintanya dikonversi oleh
+// OnlyOffice, lalu men-stream PDF hasilnya ke browser. Token DOCX dipastikan
+// terhapus walau konversi gagal.
+func (a *app) kirimSebagaiPDF(c *gin.Context, docxBytes []byte) {
+	token, err := a.store.put(docxBytes)
+	if err != nil {
+		log.Printf("[Error] Gagal menyiapkan token DOCX: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyiapkan dokumen untuk konversi"})
+		return
+	}
+	// Jaring pengaman: jika getOnce tidak terpanggil (mis. konversi gagal sebelum
+	// OnlyOffice mengambil), token tetap dibersihkan.
+	defer a.store.drop(token)
+
+	docxURL := a.cfg.AppInternalURL + "/internal/docx/" + token
+	pdfBytes, err := convertDocxToPDF(a.cfg, docxURL, "label_arsip.docx", docxBytes)
+	if err != nil {
+		log.Printf("[Error] Konversi PDF gagal: %v", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Gagal mengonversi ke PDF: " + err.Error()})
+		return
+	}
+
+	namaFileDownload := fmt.Sprintf("Buku_Label_Arsip_%d.pdf", time.Now().Unix())
+	c.Header("Content-Description", "File Transfer")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", namaFileDownload))
+	c.Header("Content-Type", "application/pdf")
+	c.Header("Content-Length", strconv.Itoa(len(pdfBytes)))
+
+	_, _ = c.Writer.Write(pdfBytes)
 }
 
 func prosesMultiHalamanInMemory(templatePath string, daftarArsip []LabelData) ([]byte, error) {

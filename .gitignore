@@ -8,3 +8,6 @@ temp/
 
 # Mengabaikan file sistem
 .DS_Store
+
+# Mengabaikan file environment (berisi secret JWT OnlyOffice)
+.env
