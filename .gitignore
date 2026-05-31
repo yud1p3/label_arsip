@@ -2,10 +2,6 @@
 *.exe
 label-arsip-prod
 
-# Mengabaikan folder output/temp (sesuaikan dengan nama folder hasil cetakmu)
-output/
-temp/
-
 # Mengabaikan file sistem
 .DS_Store
 
