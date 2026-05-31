@@ -166,6 +166,171 @@ Jika nanti hasil monitoring menunjukkan server masih longgar, nilai ini bisa din
    - `PDF (.pdf)`
 5. Klik **Mulai Proses & Unduh Label**
 
+## Deploy ke VPS Ubuntu
+
+### 1. Siapkan server
+
+Update paket sistem:
+
+```sh
+sudo apt update && sudo apt upgrade -y
+```
+
+Install dependensi dasar:
+
+```sh
+sudo apt install -y git curl nginx
+```
+
+Jika ingin build langsung di VPS, install Go juga.
+
+### 2. Ambil source code
+
+Contoh clone repo:
+
+```sh
+git clone https://github.com/yud1p3/label_arsip.git
+cd label_arsip
+```
+
+Atau pull update terbaru jika repo sudah ada:
+
+```sh
+git pull origin main
+```
+
+### 3. Siapkan file environment
+
+Buat file `.env` di root project:
+
+```env
+ONLYOFFICE_URL=http://127.0.0.1:8026
+ONLYOFFICE_JWT_SECRET=isi-secret-onlyoffice-anda
+ONLYOFFICE_JWT_HEADER=Authorization
+APP_INTERNAL_URL=http://127.0.0.1:8080
+MAX_CONCURRENT_JOBS=2
+```
+
+Catatan:
+
+- untuk VPS `2 core / 4 GB`, mulai dari `MAX_CONCURRENT_JOBS=2`
+- `APP_INTERNAL_URL` disarankan tetap ke `127.0.0.1:8080` jika aplikasi diakses lewat reverse proxy Nginx
+- untuk output PDF, aplikasi dan OnlyOffice sebaiknya berjalan di host yang sama
+
+### 4. Build aplikasi
+
+Di root project:
+
+```sh
+go build -o label-arsip-prod .
+```
+
+### 5. Jalankan dengan systemd
+
+Buat file service:
+
+```sh
+sudo nano /etc/systemd/system/label-arsip.service
+```
+
+Isi contoh service:
+
+```ini
+[Unit]
+Description=Label Arsip Web App
+After=network.target
+
+[Service]
+User=www-data
+WorkingDirectory=/home/ubuntu/label_arsip
+ExecStart=/home/ubuntu/label_arsip/label-arsip-prod
+Restart=always
+RestartSec=3
+EnvironmentFile=/home/ubuntu/label_arsip/.env
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Sesuaikan path project dengan lokasi sebenarnya di VPS.
+
+Aktifkan service:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable label-arsip
+sudo systemctl start label-arsip
+sudo systemctl status label-arsip
+```
+
+### 6. Reverse proxy dengan Nginx
+
+Buat konfigurasi site:
+
+```sh
+sudo nano /etc/nginx/sites-available/label-arsip
+```
+
+Contoh konfigurasi:
+
+```nginx
+server {
+    listen 80;
+    server_name _;
+
+    client_max_body_size 10M;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Aktifkan site:
+
+```sh
+sudo ln -s /etc/nginx/sites-available/label-arsip /etc/nginx/sites-enabled/label-arsip
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+### 7. Menjalankan OnlyOffice di VPS yang sama
+
+Contoh Docker:
+
+```sh
+docker run -i -t -d -p 127.0.0.1:8026:80 \
+  -e JWT_ENABLED=true \
+  -e JWT_SECRET=isi-secret-onlyoffice-anda \
+  --name onlyoffice \
+  onlyoffice/documentserver
+```
+
+Catatan penting:
+
+- bind ke `127.0.0.1:8026` agar OnlyOffice tidak terbuka langsung ke publik
+- secret Docker harus sama dengan `ONLYOFFICE_JWT_SECRET`
+- aplikasi Go akan mengakses OnlyOffice lewat `ONLYOFFICE_URL=http://127.0.0.1:8026`
+
+### 8. Monitoring dasar
+
+Cek log aplikasi:
+
+```sh
+sudo journalctl -u label-arsip -f
+```
+
+Cek log Nginx:
+
+```sh
+sudo tail -f /var/log/nginx/access.log /var/log/nginx/error.log
+```
+
 ## Troubleshooting
 
 ### 1. PDF tidak bisa dipilih / gagal diproses
